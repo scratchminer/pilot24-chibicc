@@ -5,17 +5,16 @@ Type *ty_bool = &(Type){TY_BOOL, 1, 1};
 
 Type *ty_char = &(Type){TY_CHAR, 1, 1};
 Type *ty_short = &(Type){TY_SHORT, 2, 2};
-Type *ty_int = &(Type){TY_INT, 4, 4};
-Type *ty_long = &(Type){TY_LONG, 8, 8};
+Type *ty_int = &(Type){TY_INT, 3, 4};
+Type *ty_long = &(Type){TY_LONG, 4, 4};
 
 Type *ty_uchar = &(Type){TY_CHAR, 1, 1, true};
 Type *ty_ushort = &(Type){TY_SHORT, 2, 2, true};
-Type *ty_uint = &(Type){TY_INT, 4, 4, true};
-Type *ty_ulong = &(Type){TY_LONG, 8, 8, true};
+Type *ty_uint = &(Type){TY_INT, 3, 4, true};
+Type *ty_ulong = &(Type){TY_LONG, 4, 4, true};
 
 Type *ty_float = &(Type){TY_FLOAT, 4, 4};
 Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
-Type *ty_ldouble = &(Type){TY_LDOUBLE, 16, 16};
 
 static Type *new_type(TypeKind kind, int size, int align) {
   Type *ty = calloc(1, sizeof(Type));
@@ -32,8 +31,7 @@ bool is_integer(Type *ty) {
 }
 
 bool is_flonum(Type *ty) {
-  return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE ||
-         ty->kind == TY_LDOUBLE;
+  return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE;
 }
 
 bool is_numeric(Type *ty) {
@@ -54,37 +52,37 @@ bool is_compatible(Type *t1, Type *t2) {
     return false;
 
   switch (t1->kind) {
-  case TY_CHAR:
-  case TY_SHORT:
-  case TY_INT:
-  case TY_LONG:
-    return t1->is_unsigned == t2->is_unsigned;
-  case TY_FLOAT:
-  case TY_DOUBLE:
-  case TY_LDOUBLE:
-    return true;
-  case TY_PTR:
-    return is_compatible(t1->base, t2->base);
-  case TY_FUNC: {
-    if (!is_compatible(t1->return_ty, t2->return_ty))
-      return false;
-    if (t1->is_variadic != t2->is_variadic)
-      return false;
-
-    Type *p1 = t1->params;
-    Type *p2 = t2->params;
-    for (; p1 && p2; p1 = p1->next, p2 = p2->next)
-      if (!is_compatible(p1, p2))
+    case TY_CHAR:
+    case TY_SHORT:
+    case TY_INT:
+    case TY_LONG:
+      return t1->is_unsigned == t2->is_unsigned;
+    case TY_FLOAT:
+    case TY_DOUBLE:
+      return true;
+    case TY_PTR:
+      return is_compatible(t1->base, t2->base);
+    case TY_FUNC: {
+      if (!is_compatible(t1->return_ty, t2->return_ty))
         return false;
-    return p1 == NULL && p2 == NULL;
-  }
-  case TY_ARRAY:
-    if (!is_compatible(t1->base, t2->base))
+      if (t1->is_variadic != t2->is_variadic)
+        return false;
+
+      Type *p1 = t1->params;
+      Type *p2 = t2->params;
+      for (; p1 && p2; p1 = p1->next, p2 = p2->next)
+        if (!is_compatible(p1, p2))
+          return false;
+      return p1 == NULL && p2 == NULL;
+    }
+    case TY_ARRAY:
+      if (!is_compatible(t1->base, t2->base))
+        return false;
+      return t1->array_len < 0 && t2->array_len < 0 &&
+             t1->array_len == t2->array_len;
+    default:
       return false;
-    return t1->array_len < 0 && t2->array_len < 0 &&
-           t1->array_len == t2->array_len;
   }
-  return false;
 }
 
 Type *copy_type(Type *ty) {
@@ -95,7 +93,7 @@ Type *copy_type(Type *ty) {
 }
 
 Type *pointer_to(Type *base) {
-  Type *ty = new_type(TY_PTR, 8, 8);
+  Type *ty = new_type(TY_PTR, 3, 4);
   ty->base = base;
   ty->is_unsigned = true;
   return ty;
@@ -117,7 +115,7 @@ Type *array_of(Type *base, int len) {
 }
 
 Type *vla_of(Type *base, Node *len) {
-  Type *ty = new_type(TY_VLA, 8, 8);
+  Type *ty = new_type(TY_VLA, 4, 4);
   ty->base = base;
   ty->vla_len = len;
   return ty;
@@ -139,17 +137,15 @@ static Type *get_common_type(Type *ty1, Type *ty2) {
     return pointer_to(ty1);
   if (ty2->kind == TY_FUNC)
     return pointer_to(ty2);
-
-  if (ty1->kind == TY_LDOUBLE || ty2->kind == TY_LDOUBLE)
-    return ty_ldouble;
+  
   if (ty1->kind == TY_DOUBLE || ty2->kind == TY_DOUBLE)
     return ty_double;
   if (ty1->kind == TY_FLOAT || ty2->kind == TY_FLOAT)
     return ty_float;
 
-  if (ty1->size < 4)
+  if (ty1->size < 3)
     ty1 = ty_int;
-  if (ty2->size < 4)
+  if (ty2->size < 3)
     ty2 = ty_int;
 
   if (ty1->size != ty2->size)
@@ -191,117 +187,102 @@ void add_type(Node *node) {
     add_type(n);
 
   switch (node->kind) {
-  case ND_NUM:
-    node->ty = ty_int;
-    return;
-  case ND_ADD:
-  case ND_SUB:
-  case ND_MUL:
-  case ND_DIV:
-  case ND_MOD:
-  case ND_BITAND:
-  case ND_BITOR:
-  case ND_BITXOR:
-    usual_arith_conv(&node->lhs, &node->rhs);
-    node->ty = node->lhs->ty;
-    return;
-  case ND_NEG: {
-    Type *ty = get_common_type(ty_int, node->lhs->ty);
-    node->lhs = new_cast(node->lhs, ty);
-    node->ty = ty;
-    return;
-  }
-  case ND_ASSIGN:
-    if (node->lhs->ty->kind == TY_ARRAY)
-      error_tok(node->lhs->tok, "not an lvalue");
-    if (node->lhs->ty->kind != TY_STRUCT)
-      node->rhs = new_cast(node->rhs, node->lhs->ty);
-    node->ty = node->lhs->ty;
-    return;
-  case ND_EQ:
-  case ND_NE:
-  case ND_LT:
-  case ND_LE:
-    usual_arith_conv(&node->lhs, &node->rhs);
-    node->ty = ty_int;
-    return;
-  case ND_FUNCALL:
-    node->ty = node->func_ty->return_ty;
-    return;
-  case ND_NOT:
-  case ND_LOGOR:
-  case ND_LOGAND:
-    node->ty = ty_int;
-    return;
-  case ND_BITNOT:
-  case ND_SHL:
-  case ND_SHR:
-    node->ty = node->lhs->ty;
-    return;
-  case ND_VAR:
-  case ND_VLA_PTR:
-    node->ty = node->var->ty;
-    return;
-  case ND_COND:
-    if (node->then->ty->kind == TY_VOID || node->els->ty->kind == TY_VOID) {
-      node->ty = ty_void;
-    } else {
-      usual_arith_conv(&node->then, &node->els);
-      node->ty = node->then->ty;
+    case ND_NUM:
+      node->ty = ty_int;
+      return;
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_MOD:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR:
+      usual_arith_conv(&node->lhs, &node->rhs);
+      node->ty = node->lhs->ty;
+      return;
+    case ND_NEG: {
+      Type *ty = get_common_type(ty_int, node->lhs->ty);
+      node->lhs = new_cast(node->lhs, ty);
+      node->ty = ty;
+      return;
     }
-    return;
-  case ND_COMMA:
-    node->ty = node->rhs->ty;
-    return;
-  case ND_MEMBER:
-    node->ty = node->member->ty;
-    return;
-  case ND_ADDR: {
-    Type *ty = node->lhs->ty;
-    if (ty->kind == TY_ARRAY)
-      node->ty = pointer_to(ty->base);
-    else
-      node->ty = pointer_to(ty);
-    return;
-  }
-  case ND_DEREF:
-    if (!node->lhs->ty->base)
-      error_tok(node->tok, "invalid pointer dereference");
-    if (node->lhs->ty->base->kind == TY_VOID)
-      error_tok(node->tok, "dereferencing a void pointer");
-
-    node->ty = node->lhs->ty->base;
-    return;
-  case ND_STMT_EXPR:
-    if (node->body) {
-      Node *stmt = node->body;
-      while (stmt->next)
-        stmt = stmt->next;
-      if (stmt->kind == ND_EXPR_STMT) {
-        node->ty = stmt->lhs->ty;
-        return;
+    case ND_ASSIGN:
+      if (node->lhs->ty->kind == TY_ARRAY)
+        error_tok(node->lhs->tok, "not an lvalue");
+      if (node->lhs->ty->kind != TY_STRUCT)
+        node->rhs = new_cast(node->rhs, node->lhs->ty);
+      node->ty = node->lhs->ty;
+      return;
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+      usual_arith_conv(&node->lhs, &node->rhs);
+      node->ty = ty_int;
+      return;
+    case ND_FUNCALL:
+      node->ty = node->func_ty->return_ty;
+      return;
+    case ND_NOT:
+    case ND_LOGOR:
+    case ND_LOGAND:
+      node->ty = ty_int;
+      return;
+    case ND_BITNOT:
+    case ND_SHL:
+    case ND_SHR:
+      node->ty = node->lhs->ty;
+      return;
+    case ND_VAR:
+    case ND_VLA_PTR:
+      node->ty = node->var->ty;
+      return;
+    case ND_COND:
+      if (node->then->ty->kind == TY_VOID || node->els->ty->kind == TY_VOID) {
+        node->ty = ty_void;
+      } else {
+        usual_arith_conv(&node->then, &node->els);
+        node->ty = node->then->ty;
       }
+      return;
+    case ND_COMMA:
+      node->ty = node->rhs->ty;
+      return;
+    case ND_MEMBER:
+      node->ty = node->member->ty;
+      return;
+    case ND_ADDR: {
+      Type *ty = node->lhs->ty;
+      if (ty->kind == TY_ARRAY)
+        node->ty = pointer_to(ty->base);
+      else
+        node->ty = pointer_to(ty);
+      return;
     }
-    error_tok(node->tok, "statement expression returning void is not supported");
-    return;
-  case ND_LABEL_VAL:
-    node->ty = pointer_to(ty_void);
-    return;
-  case ND_CAS:
-    add_type(node->cas_addr);
-    add_type(node->cas_old);
-    add_type(node->cas_new);
-    node->ty = ty_bool;
+    case ND_DEREF:
+      if (!node->lhs->ty->base)
+        error_tok(node->tok, "invalid pointer dereference");
+      if (node->lhs->ty->base->kind == TY_VOID)
+        error_tok(node->tok, "dereferencing a void pointer");
 
-    if (node->cas_addr->ty->kind != TY_PTR)
-      error_tok(node->cas_addr->tok, "pointer expected");
-    if (node->cas_old->ty->kind != TY_PTR)
-      error_tok(node->cas_old->tok, "pointer expected");
-    return;
-  case ND_EXCH:
-    if (node->lhs->ty->kind != TY_PTR)
-      error_tok(node->cas_addr->tok, "pointer expected");
-    node->ty = node->lhs->ty->base;
-    return;
+      node->ty = node->lhs->ty->base;
+      return;
+    case ND_STMT_EXPR:
+      if (node->body) {
+        Node *stmt = node->body;
+        while (stmt->next)
+          stmt = stmt->next;
+        if (stmt->kind == ND_EXPR_STMT) {
+          node->ty = stmt->lhs->ty;
+          return;
+        }
+      }
+      error_tok(node->tok, "statement expression returning void is not supported");
+      return;
+    case ND_LABEL_VAL:
+      node->ty = pointer_to(ty_void);
+    default:
+      return;
   }
 }

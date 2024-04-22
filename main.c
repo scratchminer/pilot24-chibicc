@@ -6,7 +6,6 @@ typedef enum {
 
 StringArray include_paths;
 bool opt_fcommon = true;
-bool opt_fpic;
 
 static FileType opt_x;
 static StringArray opt_include;
@@ -54,7 +53,7 @@ static void add_default_include_paths(char *argv0) {
   // We expect that chibicc-specific include files are installed
   // to ./include relative to argv[0].
   strarray_push(&include_paths, format("%s/include", dirname(strdup(argv0))));
-
+  
   // Add standard include paths.
   strarray_push(&include_paths, "/usr/local/include");
   strarray_push(&include_paths, "/usr/include/x86_64-linux-gnu");
@@ -266,11 +265,6 @@ static void parse_args(int argc, char **argv) {
       continue;
     }
 
-    if (!strcmp(argv[i], "-fpic") || !strcmp(argv[i], "-fPIC")) {
-      opt_fpic = true;
-      continue;
-    }
-
     if (!strcmp(argv[i], "-cc1-input")) {
       base_file = argv[++i];
       continue;
@@ -325,8 +319,6 @@ static void parse_args(int argc, char **argv) {
         !strcmp(argv[i], "-fno-omit-frame-pointer") ||
         !strcmp(argv[i], "-fno-stack-protector") ||
         !strcmp(argv[i], "-fno-strict-aliasing") ||
-        !strcmp(argv[i], "-m64") ||
-        !strcmp(argv[i], "-mno-red-zone") ||
         !strcmp(argv[i], "-w"))
       continue;
 

@@ -44,7 +44,6 @@ typedef struct {
   bool is_static;
   bool is_extern;
   bool is_inline;
-  bool is_tls;
   int align;
 } VarAttr;
 
@@ -218,14 +217,14 @@ static Node *new_num(int64_t val, Token *tok) {
 static Node *new_long(int64_t val, Token *tok) {
   Node *node = new_node(ND_NUM, tok);
   node->val = val;
-  node->ty = ty_long;
+  node->ty = ty_int;
   return node;
 }
 
 static Node *new_ulong(long val, Token *tok) {
   Node *node = new_node(ND_NUM, tok);
   node->val = val;
-  node->ty = ty_ulong;
+  node->ty = ty_uint;
   return node;
 }
 
@@ -326,7 +325,7 @@ static Obj *new_gvar(char *name, Type *ty) {
 
 static char *new_unique_name(void) {
   static int id = 0;
-  return format(".L..%d", id++);
+  return format("__L_%d", id++);
 }
 
 static Obj *new_anon_gvar(Type *ty) {
@@ -360,7 +359,6 @@ static void push_tag_scope(Token *tok, Type *ty) {
 
 // declspec = ("void" | "_Bool" | "char" | "short" | "int" | "long"
 //             | "typedef" | "static" | "extern" | "inline"
-//             | "_Thread_local" | "__thread"
 //             | "signed" | "unsigned"
 //             | struct-decl | union-decl | typedef-name
 //             | enum-specifier | typeof-specifier
@@ -399,12 +397,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 
   Type *ty = ty_int;
   int counter = 0;
-  bool is_atomic = false;
 
   while (is_typename(tok)) {
     // Handle storage class specifiers.
     if (equal(tok, "typedef") || equal(tok, "static") || equal(tok, "extern") ||
-        equal(tok, "inline") || equal(tok, "_Thread_local") || equal(tok, "__thread")) {
+        equal(tok, "inline")) {
       if (!attr)
         error_tok(tok, "storage class specifier is not allowed in this context");
 
@@ -416,13 +413,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         attr->is_extern = true;
       else if (equal(tok, "inline"))
         attr->is_inline = true;
-      else
-        attr->is_tls = true;
 
       if (attr->is_typedef &&
-          attr->is_static + attr->is_extern + attr->is_inline + attr->is_tls > 1)
+          attr->is_static + attr->is_extern + attr->is_inline > 1)
         error_tok(tok, "typedef may not be used together with static,"
-                  " extern, inline, __thread or _Thread_local");
+                  " extern, or inline");
       tok = tok->next;
       continue;
     }
@@ -433,16 +428,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         consume(&tok, tok, "restrict") || consume(&tok, tok, "__restrict") ||
         consume(&tok, tok, "__restrict__") || consume(&tok, tok, "_Noreturn"))
       continue;
-
-    if (equal(tok, "_Atomic")) {
-      tok = tok->next;
-      if (equal(tok , "(")) {
-        ty = typename(&tok, tok->next);
-        tok = skip(tok, ")");
-      }
-      is_atomic = true;
-      continue;
-    }
 
     if (equal(tok, "_Alignas")) {
       if (!attr)
@@ -540,18 +525,12 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       break;
     case LONG:
     case LONG + INT:
-    case LONG + LONG:
-    case LONG + LONG + INT:
     case SIGNED + LONG:
     case SIGNED + LONG + INT:
-    case SIGNED + LONG + LONG:
-    case SIGNED + LONG + LONG + INT:
       ty = ty_long;
       break;
     case UNSIGNED + LONG:
     case UNSIGNED + LONG + INT:
-    case UNSIGNED + LONG + LONG:
-    case UNSIGNED + LONG + LONG + INT:
       ty = ty_ulong;
       break;
     case FLOAT:
@@ -560,19 +539,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     case DOUBLE:
       ty = ty_double;
       break;
-    case LONG + DOUBLE:
-      ty = ty_ldouble;
-      break;
     default:
       error_tok(tok, "invalid type");
     }
 
     tok = tok->next;
-  }
-
-  if (is_atomic) {
-    ty = copy_type(ty);
-    ty->is_atomic = true;
   }
 
   *rest = tok;
@@ -1388,27 +1359,27 @@ static Node *lvar_initializer(Token **rest, Token *tok, Obj *var) {
   return new_binary(ND_COMMA, lhs, rhs, tok);
 }
 
-static uint64_t read_buf(char *buf, int sz) {
+static uint32_t read_buf(char *buf, int sz) {
   if (sz == 1)
     return *buf;
   if (sz == 2)
     return *(uint16_t *)buf;
+  if (sz == 3)
+    return *(uint32_t *)buf;
   if (sz == 4)
     return *(uint32_t *)buf;
-  if (sz == 8)
-    return *(uint64_t *)buf;
   unreachable();
 }
 
-static void write_buf(char *buf, uint64_t val, int sz) {
+static void write_buf(char *buf, uint32_t val, int sz) {
   if (sz == 1)
     *buf = val;
   else if (sz == 2)
     *(uint16_t *)buf = val;
+  else if (sz == 3)
+    *(uint32_t *)buf = val;
   else if (sz == 4)
     *(uint32_t *)buf = val;
-  else if (sz == 8)
-    *(uint64_t *)buf = val;
   else
     unreachable();
 }
@@ -1430,10 +1401,10 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
           break;
 
         char *loc = buf + offset + mem->offset;
-        uint64_t oldval = read_buf(loc, mem->ty->size);
-        uint64_t newval = eval(expr);
-        uint64_t mask = (1L << mem->bit_width) - 1;
-        uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
+        uint32_t oldval = read_buf(loc, mem->ty->size);
+        uint32_t newval = eval(expr);
+        uint32_t mask = (1L << mem->bit_width) - 1;
+        uint32_t combined = oldval | ((newval & mask) << mem->bit_offset);
         write_buf(loc, combined, mem->ty->size);
       } else {
         cur = write_gvar_data(cur, init->children[mem->idx], mem->ty, buf,
@@ -1467,7 +1438,7 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   uint64_t val = eval2(init->expr, &label);
 
   if (!label) {
-    write_buf(buf + offset, val, ty->size);
+    write_buf(buf + offset, (uint32_t)val, ty->size);
     return cur;
   }
 
@@ -1503,7 +1474,6 @@ static bool is_typename(Token *tok) {
       "typedef", "enum", "static", "extern", "_Alignas", "signed", "unsigned",
       "const", "volatile", "auto", "register", "restrict", "__restrict",
       "__restrict__", "_Noreturn", "float", "double", "typeof", "inline",
-      "_Thread_local", "__thread", "_Atomic",
     };
 
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
@@ -1842,146 +1812,148 @@ static int64_t eval2(Node *node, char ***label) {
     return eval_double(node);
 
   switch (node->kind) {
-  case ND_ADD:
-    return eval2(node->lhs, label) + eval(node->rhs);
-  case ND_SUB:
-    return eval2(node->lhs, label) - eval(node->rhs);
-  case ND_MUL:
-    return eval(node->lhs) * eval(node->rhs);
-  case ND_DIV:
-    if (node->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) / eval(node->rhs);
-    return eval(node->lhs) / eval(node->rhs);
-  case ND_NEG:
-    return -eval(node->lhs);
-  case ND_MOD:
-    if (node->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) % eval(node->rhs);
-    return eval(node->lhs) % eval(node->rhs);
-  case ND_BITAND:
-    return eval(node->lhs) & eval(node->rhs);
-  case ND_BITOR:
-    return eval(node->lhs) | eval(node->rhs);
-  case ND_BITXOR:
-    return eval(node->lhs) ^ eval(node->rhs);
-  case ND_SHL:
-    return eval(node->lhs) << eval(node->rhs);
-  case ND_SHR:
-    if (node->ty->is_unsigned && node->ty->size == 8)
-      return (uint64_t)eval(node->lhs) >> eval(node->rhs);
-    return eval(node->lhs) >> eval(node->rhs);
-  case ND_EQ:
-    return eval(node->lhs) == eval(node->rhs);
-  case ND_NE:
-    return eval(node->lhs) != eval(node->rhs);
-  case ND_LT:
-    if (node->lhs->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) < eval(node->rhs);
-    return eval(node->lhs) < eval(node->rhs);
-  case ND_LE:
-    if (node->lhs->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) <= eval(node->rhs);
-    return eval(node->lhs) <= eval(node->rhs);
-  case ND_COND:
-    return eval(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
-  case ND_COMMA:
-    return eval2(node->rhs, label);
-  case ND_NOT:
-    return !eval(node->lhs);
-  case ND_BITNOT:
-    return ~eval(node->lhs);
-  case ND_LOGAND:
-    return eval(node->lhs) && eval(node->rhs);
-  case ND_LOGOR:
-    return eval(node->lhs) || eval(node->rhs);
-  case ND_CAST: {
-    int64_t val = eval2(node->lhs, label);
-    if (is_integer(node->ty)) {
-      switch (node->ty->size) {
-      case 1: return node->ty->is_unsigned ? (uint8_t)val : (int8_t)val;
-      case 2: return node->ty->is_unsigned ? (uint16_t)val : (int16_t)val;
-      case 4: return node->ty->is_unsigned ? (uint32_t)val : (int32_t)val;
+    case ND_ADD:
+      return eval2(node->lhs, label) + eval(node->rhs);
+    case ND_SUB:
+      return eval2(node->lhs, label) - eval(node->rhs);
+    case ND_MUL:
+      return eval(node->lhs) * eval(node->rhs);
+    case ND_DIV:
+      if (node->ty->is_unsigned)
+        return (uint64_t)eval(node->lhs) / eval(node->rhs);
+      return eval(node->lhs) / eval(node->rhs);
+    case ND_NEG:
+      return -eval(node->lhs);
+    case ND_MOD:
+      if (node->ty->is_unsigned)
+        return (uint64_t)eval(node->lhs) % eval(node->rhs);
+      return eval(node->lhs) % eval(node->rhs);
+    case ND_BITAND:
+      return eval(node->lhs) & eval(node->rhs);
+    case ND_BITOR:
+      return eval(node->lhs) | eval(node->rhs);
+    case ND_BITXOR:
+      return eval(node->lhs) ^ eval(node->rhs);
+    case ND_SHL:
+      return eval(node->lhs) << eval(node->rhs);
+    case ND_SHR:
+      if (node->ty->is_unsigned && node->ty->size == 8)
+        return (uint64_t)eval(node->lhs) >> eval(node->rhs);
+      return eval(node->lhs) >> eval(node->rhs);
+    case ND_EQ:
+      return eval(node->lhs) == eval(node->rhs);
+    case ND_NE:
+      return eval(node->lhs) != eval(node->rhs);
+    case ND_LT:
+      if (node->lhs->ty->is_unsigned)
+        return (uint64_t)eval(node->lhs) < eval(node->rhs);
+      return eval(node->lhs) < eval(node->rhs);
+    case ND_LE:
+      if (node->lhs->ty->is_unsigned)
+        return (uint64_t)eval(node->lhs) <= eval(node->rhs);
+      return eval(node->lhs) <= eval(node->rhs);
+    case ND_COND:
+      return eval(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
+    case ND_COMMA:
+      return eval2(node->rhs, label);
+    case ND_NOT:
+      return !eval(node->lhs);
+    case ND_BITNOT:
+      return ~eval(node->lhs);
+    case ND_LOGAND:
+      return eval(node->lhs) && eval(node->rhs);
+    case ND_LOGOR:
+      return eval(node->lhs) || eval(node->rhs);
+    case ND_CAST: {
+      int64_t val = eval2(node->lhs, label);
+      if (is_integer(node->ty)) {
+        switch (node->ty->size) {
+        case 1: return node->ty->is_unsigned ? (uint8_t)val : (int8_t)val;
+        case 2: return node->ty->is_unsigned ? (uint16_t)val : (int16_t)val;
+        case 4: return node->ty->is_unsigned ? (uint32_t)val : (int32_t)val;
+        }
       }
+      return val;
     }
-    return val;
-  }
-  case ND_ADDR:
-    return eval_rval(node->lhs, label);
-  case ND_LABEL_VAL:
-    *label = &node->unique_label;
-    return 0;
-  case ND_MEMBER:
-    if (!label)
+    case ND_ADDR:
+      return eval_rval(node->lhs, label);
+    case ND_LABEL_VAL:
+      *label = &node->unique_label;
+      return 0;
+    case ND_MEMBER:
+      if (!label)
+        error_tok(node->tok, "not a compile-time constant");
+      if (node->ty->kind != TY_ARRAY)
+        error_tok(node->tok, "invalid initializer");
+      return eval_rval(node->lhs, label) + node->member->offset;
+    case ND_VAR:
+      if (!label)
+        error_tok(node->tok, "not a compile-time constant");
+      if (node->var->ty->kind != TY_ARRAY && node->var->ty->kind != TY_FUNC)
+        error_tok(node->tok, "invalid initializer");
+      *label = &node->var->name;
+      return 0;
+    case ND_NUM:
+      return node->val;
+    default:
       error_tok(node->tok, "not a compile-time constant");
-    if (node->ty->kind != TY_ARRAY)
-      error_tok(node->tok, "invalid initializer");
-    return eval_rval(node->lhs, label) + node->member->offset;
-  case ND_VAR:
-    if (!label)
-      error_tok(node->tok, "not a compile-time constant");
-    if (node->var->ty->kind != TY_ARRAY && node->var->ty->kind != TY_FUNC)
-      error_tok(node->tok, "invalid initializer");
-    *label = &node->var->name;
-    return 0;
-  case ND_NUM:
-    return node->val;
+      return 0;
   }
-
-  error_tok(node->tok, "not a compile-time constant");
 }
 
 static int64_t eval_rval(Node *node, char ***label) {
   switch (node->kind) {
-  case ND_VAR:
-    if (node->var->is_local)
-      error_tok(node->tok, "not a compile-time constant");
-    *label = &node->var->name;
-    return 0;
-  case ND_DEREF:
-    return eval2(node->lhs, label);
-  case ND_MEMBER:
-    return eval_rval(node->lhs, label) + node->member->offset;
+    case ND_VAR:
+      if (node->var->is_local)
+        error_tok(node->tok, "not a compile-time constant");
+      *label = &node->var->name;
+      return 0;
+    case ND_DEREF:
+      return eval2(node->lhs, label);
+    case ND_MEMBER:
+      return eval_rval(node->lhs, label) + node->member->offset;
+    default:
+      error_tok(node->tok, "invalid initializer");
+      return 0;
   }
-
-  error_tok(node->tok, "invalid initializer");
 }
 
 static bool is_const_expr(Node *node) {
   add_type(node);
 
   switch (node->kind) {
-  case ND_ADD:
-  case ND_SUB:
-  case ND_MUL:
-  case ND_DIV:
-  case ND_BITAND:
-  case ND_BITOR:
-  case ND_BITXOR:
-  case ND_SHL:
-  case ND_SHR:
-  case ND_EQ:
-  case ND_NE:
-  case ND_LT:
-  case ND_LE:
-  case ND_LOGAND:
-  case ND_LOGOR:
-    return is_const_expr(node->lhs) && is_const_expr(node->rhs);
-  case ND_COND:
-    if (!is_const_expr(node->cond))
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR:
+    case ND_SHL:
+    case ND_SHR:
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+    case ND_LOGAND:
+    case ND_LOGOR:
+      return is_const_expr(node->lhs) && is_const_expr(node->rhs);
+    case ND_COND:
+      if (!is_const_expr(node->cond))
+        return false;
+      return is_const_expr(eval(node->cond) ? node->then : node->els);
+    case ND_COMMA:
+      return is_const_expr(node->rhs);
+    case ND_NEG:
+    case ND_NOT:
+    case ND_BITNOT:
+    case ND_CAST:
+      return is_const_expr(node->lhs);
+    case ND_NUM:
+      return true;
+    default:
       return false;
-    return is_const_expr(eval(node->cond) ? node->then : node->els);
-  case ND_COMMA:
-    return is_const_expr(node->rhs);
-  case ND_NEG:
-  case ND_NOT:
-  case ND_BITNOT:
-  case ND_CAST:
-    return is_const_expr(node->lhs);
-  case ND_NUM:
-    return true;
   }
-
-  return false;
 }
 
 int64_t const_expr(Token **rest, Token *tok) {
@@ -1999,29 +1971,30 @@ static double eval_double(Node *node) {
   }
 
   switch (node->kind) {
-  case ND_ADD:
-    return eval_double(node->lhs) + eval_double(node->rhs);
-  case ND_SUB:
-    return eval_double(node->lhs) - eval_double(node->rhs);
-  case ND_MUL:
-    return eval_double(node->lhs) * eval_double(node->rhs);
-  case ND_DIV:
-    return eval_double(node->lhs) / eval_double(node->rhs);
-  case ND_NEG:
-    return -eval_double(node->lhs);
-  case ND_COND:
-    return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
-  case ND_COMMA:
-    return eval_double(node->rhs);
-  case ND_CAST:
-    if (is_flonum(node->lhs->ty))
-      return eval_double(node->lhs);
-    return eval(node->lhs);
-  case ND_NUM:
-    return node->fval;
+    case ND_ADD:
+      return eval_double(node->lhs) + eval_double(node->rhs);
+    case ND_SUB:
+      return eval_double(node->lhs) - eval_double(node->rhs);
+    case ND_MUL:
+      return eval_double(node->lhs) * eval_double(node->rhs);
+    case ND_DIV:
+      return eval_double(node->lhs) / eval_double(node->rhs);
+    case ND_NEG:
+      return -eval_double(node->lhs);
+    case ND_COND:
+      return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
+    case ND_COMMA:
+      return eval_double(node->rhs);
+    case ND_CAST:
+      if (is_flonum(node->lhs->ty))
+        return eval_double(node->lhs);
+      return eval(node->lhs);
+    case ND_NUM:
+      return node->fval;
+    default:
+      error_tok(node->tok, "not a compile-time constant");
+      return 0.0;
   }
-
-  error_tok(node->tok, "not a compile-time constant");
 }
 
 // Convert op= operators to expressions containing an assignment.
@@ -2057,68 +2030,6 @@ static Node *to_assign(Node *binary) {
                              tok);
 
     return new_binary(ND_COMMA, expr1, expr4, tok);
-  }
-
-  // If A is an atomic type, Convert `A op= B` to
-  //
-  // ({
-  //   T1 *addr = &A; T2 val = (B); T1 old = *addr; T1 new;
-  //   do {
-  //    new = old op val;
-  //   } while (!atomic_compare_exchange_strong(addr, &old, new));
-  //   new;
-  // })
-  if (binary->lhs->ty->is_atomic) {
-    Node head = {};
-    Node *cur = &head;
-
-    Obj *addr = new_lvar("", pointer_to(binary->lhs->ty));
-    Obj *val = new_lvar("", binary->rhs->ty);
-    Obj *old = new_lvar("", binary->lhs->ty);
-    Obj *new = new_lvar("", binary->lhs->ty);
-
-    cur = cur->next =
-      new_unary(ND_EXPR_STMT,
-                new_binary(ND_ASSIGN, new_var_node(addr, tok),
-                           new_unary(ND_ADDR, binary->lhs, tok), tok),
-                tok);
-
-    cur = cur->next =
-      new_unary(ND_EXPR_STMT,
-                new_binary(ND_ASSIGN, new_var_node(val, tok), binary->rhs, tok),
-                tok);
-
-    cur = cur->next =
-      new_unary(ND_EXPR_STMT,
-                new_binary(ND_ASSIGN, new_var_node(old, tok),
-                           new_unary(ND_DEREF, new_var_node(addr, tok), tok), tok),
-                tok);
-
-    Node *loop = new_node(ND_DO, tok);
-    loop->brk_label = new_unique_name();
-    loop->cont_label = new_unique_name();
-
-    Node *body = new_binary(ND_ASSIGN,
-                            new_var_node(new, tok),
-                            new_binary(binary->kind, new_var_node(old, tok),
-                                       new_var_node(val, tok), tok),
-                            tok);
-
-    loop->then = new_node(ND_BLOCK, tok);
-    loop->then->body = new_unary(ND_EXPR_STMT, body, tok);
-
-    Node *cas = new_node(ND_CAS, tok);
-    cas->cas_addr = new_var_node(addr, tok);
-    cas->cas_old = new_unary(ND_ADDR, new_var_node(old, tok), tok);
-    cas->cas_new = new_var_node(new, tok);
-    loop->cond = new_unary(ND_NOT, cas, tok);
-
-    cur = cur->next = loop;
-    cur = cur->next = new_unary(ND_EXPR_STMT, new_var_node(new, tok), tok);
-
-    Node *node = new_node(ND_STMT_EXPR, tok);
-    node->body = head.next;
-    return node;
   }
 
   // Convert `A op= B` to ``tmp = &A, *tmp = *tmp op B`.
@@ -3049,34 +2960,14 @@ static Node *primary(Token **rest, Token *tok) {
     tok = skip(tok->next, "(");
     Type *ty = typename(&tok, tok);
     *rest = skip(tok, ")");
-
-    if (is_integer(ty) || ty->kind == TY_PTR)
+    
+    if ((is_integer(ty)) || ty->kind == TY_PTR)
       return new_num(0, start);
-    if (is_flonum(ty))
+    if (ty->kind == TY_FLOAT)
       return new_num(1, start);
-    return new_num(2, start);
-  }
-
-  if (equal(tok, "__builtin_compare_and_swap")) {
-    Node *node = new_node(ND_CAS, tok);
-    tok = skip(tok->next, "(");
-    node->cas_addr = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->cas_old = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->cas_new = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
-  }
-
-  if (equal(tok, "__builtin_atomic_exchange")) {
-    Node *node = new_node(ND_EXCH, tok);
-    tok = skip(tok->next, "(");
-    node->lhs = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->rhs = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
+    if (ty->kind == TY_DOUBLE)
+      return new_num(2, start);
+    return new_num(3, start);
   }
 
   if (tok->kind == TK_IDENT) {
@@ -3233,26 +3124,16 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   // A buffer for a struct/union return value is passed
   // as the hidden first parameter.
   Type *rty = ty->return_ty;
-  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION) && rty->size > 16)
+  if (rty->kind == TY_STRUCT || rty->kind == TY_UNION)
     new_lvar("", pointer_to(rty));
 
   fn->params = locals;
 
   if (ty->is_variadic)
-    fn->va_area = new_lvar("__va_area__", array_of(ty_char, 136));
+    fn->va_area = new_lvar("__va_area__", array_of(ty_char, 74));
   fn->alloca_bottom = new_lvar("__alloca_size__", pointer_to(ty_char));
 
   tok = skip(tok, "{");
-
-  // [https://www.sigbus.info/n1570#6.4.2.2p1] "__func__" is
-  // automatically defined as a local variable containing the
-  // current function name.
-  push_scope("__func__")->var =
-    new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
-
-  // [GNU] __FUNCTION__ is yet another name of __func__.
-  push_scope("__FUNCTION__")->var =
-    new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
 
   fn->body = compound_stmt(&tok, tok);
   fn->locals = locals;
@@ -3276,13 +3157,12 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
     Obj *var = new_gvar(get_ident(ty->name), ty);
     var->is_definition = !attr->is_extern;
     var->is_static = attr->is_static;
-    var->is_tls = attr->is_tls;
     if (attr->align)
       var->align = attr->align;
 
     if (equal(tok, "="))
       gvar_initializer(&tok, tok->next, var);
-    else if (!attr->is_extern && !attr->is_tls)
+    else if (!attr->is_extern)
       var->is_tentative = true;
   }
   return tok;

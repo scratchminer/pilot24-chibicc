@@ -142,7 +142,6 @@ struct Obj {
 
   // Global variable
   bool is_tentative;
-  bool is_tls;
   char *init_data;
   Relocation *rel;
 
@@ -220,8 +219,6 @@ typedef enum {
   ND_CAST,      // Type cast
   ND_MEMZERO,   // Zero-clear a stack variable
   ND_ASM,       // "asm"
-  ND_CAS,       // Atomic compare-and-swap
-  ND_EXCH,      // Atomic exchange
 } NodeKind;
 
 // AST node type
@@ -273,15 +270,6 @@ struct Node {
   // "asm" string literal
   char *asm_str;
 
-  // Atomic compare-and-swap
-  Node *cas_addr;
-  Node *cas_old;
-  Node *cas_new;
-
-  // Atomic op= operators
-  Obj *atomic_addr;
-  Node *atomic_expr;
-
   // Variable
   Obj *var;
 
@@ -307,7 +295,6 @@ typedef enum {
   TY_LONG,
   TY_FLOAT,
   TY_DOUBLE,
-  TY_LDOUBLE,
   TY_ENUM,
   TY_PTR,
   TY_FUNC,
@@ -322,7 +309,6 @@ struct Type {
   int size;           // sizeof() value
   int align;          // alignment
   bool is_unsigned;   // unsigned or signed
-  bool is_atomic;     // true if _Atomic
   Type *origin;       // for type compatibility check
 
   // Pointer-to or array-of type. We intentionally use the same member
@@ -389,7 +375,6 @@ extern Type *ty_ulong;
 
 extern Type *ty_float;
 extern Type *ty_double;
-extern Type *ty_ldouble;
 
 bool is_integer(Type *ty);
 bool is_flonum(Type *ty);
@@ -452,6 +437,5 @@ void hashmap_test(void);
 bool file_exists(char *path);
 
 extern StringArray include_paths;
-extern bool opt_fpic;
 extern bool opt_fcommon;
 extern char *base_file;

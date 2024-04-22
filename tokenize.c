@@ -166,7 +166,7 @@ static bool is_keyword(Token *tok) {
       "default", "extern", "_Alignof", "_Alignas", "do", "signed",
       "unsigned", "const", "volatile", "auto", "register", "restrict",
       "__restrict", "__restrict__", "_Noreturn", "float", "double",
-      "typeof", "asm", "_Thread_local", "__thread", "_Atomic",
+      "typeof", "asm",
       "__attribute__",
     };
 
@@ -356,22 +356,13 @@ static bool convert_pp_int(Token *tok) {
 
   int64_t val = strtoul(p, &p, base);
 
-  // Read U, L or LL suffixes.
+  // Read U or L suffixes.
   bool l = false;
   bool u = false;
 
-  if (startswith(p, "LLU") || startswith(p, "LLu") ||
-      startswith(p, "llU") || startswith(p, "llu") ||
-      startswith(p, "ULL") || startswith(p, "Ull") ||
-      startswith(p, "uLL") || startswith(p, "ull")) {
-    p += 3;
-    l = u = true;
-  } else if (!strncasecmp(p, "lu", 2) || !strncasecmp(p, "ul", 2)) {
+  if (!strncasecmp(p, "lu", 2) || !strncasecmp(p, "ul", 2)) {
     p += 2;
     l = u = true;
-  } else if (startswith(p, "LL") || startswith(p, "ll")) {
-    p += 2;
-    l = true;
   } else if (*p == 'L' || *p == 'l') {
     p++;
     l = true;
@@ -391,21 +382,21 @@ static bool convert_pp_int(Token *tok) {
     else if (l)
       ty = ty_long;
     else if (u)
-      ty = (val >> 32) ? ty_ulong : ty_uint;
+      ty = (val >> 24) ? ty_ulong : ty_uint;
     else
-      ty = (val >> 31) ? ty_long : ty_int;
+      ty = (val >> 23) ? ty_long : ty_int;
   } else {
     if (l && u)
       ty = ty_ulong;
     else if (l)
-      ty = (val >> 63) ? ty_ulong : ty_long;
+      ty = (val >> 31) ? ty_ulong : ty_long;
     else if (u)
-      ty = (val >> 32) ? ty_ulong : ty_uint;
-    else if (val >> 63)
-      ty = ty_ulong;
-    else if (val >> 32)
-      ty = ty_long;
+      ty = (val >> 24) ? ty_ulong : ty_uint;
     else if (val >> 31)
+      ty = ty_ulong;
+    else if (val >> 24)
+      ty = ty_long;
+    else if (val >> 23)
       ty = ty_uint;
     else
       ty = ty_int;
@@ -436,9 +427,6 @@ static void convert_pp_number(Token *tok) {
   Type *ty;
   if (*end == 'f' || *end == 'F') {
     ty = ty_float;
-    end++;
-  } else if (*end == 'l' || *end == 'L') {
-    ty = ty_ldouble;
     end++;
   } else {
     ty = ty_double;

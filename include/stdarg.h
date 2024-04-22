@@ -4,6 +4,7 @@
 typedef struct {
   unsigned int gp_offset;
   unsigned int fp_offset;
+  unsigned int dp_offset;
   void *overflow_arg_area;
   void *reg_save_area;
 } __va_elem;
@@ -17,27 +18,34 @@ typedef __va_elem va_list[1];
 
 static void *__va_arg_mem(__va_elem *ap, int sz, int align) {
   void *p = ap->overflow_arg_area;
-  if (align > 8)
-    p = (p + 15) / 16 * 16;
-  ap->overflow_arg_area = ((unsigned long)p + sz + 7) / 8 * 8;
+  ap->overflow_arg_area = ((unsigned int)p + sz + 1) / 2 * 2;
   return p;
 }
 
 static void *__va_arg_gp(__va_elem *ap, int sz, int align) {
-  if (ap->gp_offset >= 48)
+  if (ap->gp_offset >= 44)
     return __va_arg_mem(ap, sz, align);
 
   void *r = ap->reg_save_area + ap->gp_offset;
-  ap->gp_offset += 8;
+  ap->gp_offset += align;
   return r;
 }
 
 static void *__va_arg_fp(__va_elem *ap, int sz, int align) {
-  if (ap->fp_offset >= 112)
+  if (ap->fp_offset >= 52)
     return __va_arg_mem(ap, sz, align);
 
   void *r = ap->reg_save_area + ap->fp_offset;
-  ap->fp_offset += 8;
+  ap->fp_offset += 4;
+  return r;
+}
+
+static void *__va_arg_dp(__va_elem *ap, int sz, int align) {
+  if (ap->dp_offset >= 76)
+    return __va_arg_mem(ap, sz, align);
+
+  void *r = ap->reg_save_area + ap->dp_offset;
+  ap->dp_offset += 8;
   return r;
 }
 
@@ -46,6 +54,7 @@ static void *__va_arg_fp(__va_elem *ap, int sz, int align) {
     int klass = __builtin_reg_class(ty);                                \
     *(ty *)(klass == 0 ? __va_arg_gp(ap, sizeof(ty), _Alignof(ty)) :    \
             klass == 1 ? __va_arg_fp(ap, sizeof(ty), _Alignof(ty)) :    \
+            klass == 2 ? __va_arg_dp(ap, sizeof(ty), _Alignof(ty)) :    \
             __va_arg_mem(ap, sizeof(ty), _Alignof(ty)));                \
   })
 
