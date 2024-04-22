@@ -12,6 +12,6 @@ $(OBJS): chibicc.h
 
 clean:
 	rm -rf chibicc
-	find * -type f '(' -name '*~' -o -name '*.o' ')' -exec rm {} ';'
+	rm -rf $(OBJS)
 
 .PHONY: all clean
