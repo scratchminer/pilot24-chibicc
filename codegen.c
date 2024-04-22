@@ -879,8 +879,8 @@ static bool gen_expr(Node *node, bool collapse, bool override) {
             println("\tsla.%c %c%d", suffix, reg, to_reg);
           }
           else {
-            println("\trl.w @__long_%d0", to_reg);
             println("\tsla.w @__long_%d1", to_reg);
+            println("\trl.w @__long_%d0", to_reg);
           }
         }
         
@@ -1363,7 +1363,7 @@ static bool gen_expr(Node *node, bool collapse, bool override) {
         println("\tld.w @-sp, w1");
         println("\tld.w @-sp, w0");
         println("\tld.w w1, @__long_%d1", to_reg);
-	      if (node->ty->is_unsigned)
+        if (node->ty->is_unsigned)
           println("\tmulu.w w1, @__long_%d0", rec_reg);
         else
           println("\tmuls.w w1, @__long_%d0", rec_reg);
