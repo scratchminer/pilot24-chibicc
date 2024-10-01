@@ -1043,8 +1043,7 @@ static bool gen_expr(Node *node, bool collapse, bool override) {
         println("\tcp.p p1, 0");
         println("\tjr eq, __L_zeroizebreak_%d", c);
         println("\tld.b @p0+, 0");
-        println("\tsbq.p p1, 1");
-        println("\tjr.s __L_zeroize_%d", c);
+        println("\tdjnz p1, __L_zeroize_%d", c);
         println("__L_zeroizebreak_%d:", c);
         println("\tld.p p1, @sp+");
         indents--; return ret;
@@ -1384,24 +1383,75 @@ static bool gen_expr(Node *node, bool collapse, bool override) {
       case ND_MOD: {
         int c = count();
         println("\tld.w @-sp, w1");
-        
-        // compute partial quotient #2 (bits 16-31)
         println("\tldq p0, $00");
+        
+        // bit 23 of P0 is used to mark whether to negate the result
+        if (!(node->ty->is_unsigned)) {
+          println("\tcp.w @__long_%d1, 0", rec_reg);
+          println("\tjr p, __L_divskipnega_%d", c);
+          println("\tneg.w @__long_%d0", rec_reg);
+          println("\tngx.w @__long_%d1", rec_reg);
+          println("\txor.p p0, $800000");
+          println("__L_divskipnegx_%d:", c);
+          
+          println("\tcp.w @__long_%d1, 0", to_reg);
+          println("\tjr p, __L_divskipnegb_%d", c);
+          println("\tneg.w @__long_%d0", to_reg);
+          println("\tngx.w @__long_%d1", to_reg);
+          println("\txor.p p0, $800000");
+          println("__L_divskipnegy_%d:", c);
+        }
+        
+        // check if the top half of the divisor is zero
+        // (if it is, we can shortcut to the DIVU.W instruction)
         println("\tcp.w @__long_%d1, 0", rec_reg);
         println("\tjr z, __L_divzero_%d", c);
-        println("\tld.w w1, @__long_%d1", to_reg);
-        if (node->ty->is_unsigned)
-          println("\tdivu.w w1, @__long_%d1", rec_reg);
-        else
-          println("\tdivs.w w1, @__long_%d1", rec_reg);
-        println("\tld.w @__long_%d1, w0", rec_reg);
-        println("\tld.w @-sp, w1");
-        if (node->ty->is_unsigned)
-          println("\tmulu.w w1, @__long_%d0", rec_reg);
-        else
-          println("\tmuls.w w1, @__long_%d0", rec_reg);
-        println("\tsub.w @__long_%d0, w1", to_reg);
-        println("\tsbx.w @__long_%d1, w0", to_reg);
+        
+        // do software 32 bit / 32 bit division (http://www.piclist.com/techref/microchip/math/div/div16or32by16to16.htm)
+        // initialize loop counter (P4) and remainder registers (W0, W1), save W2 and W3 for quotient
+        println("\tld.w @-sp, w3");
+        println("\tld.w @-sp, w2");
+        println("\tld.p @-sp, p4");
+        println("\tld.w w1, 0");
+        println("\tldq p4, 32");
+        
+        println("__L_divloop_%d:", c);
+        
+        // rotate remainder:dividend left
+        println("\tsla.w @__long_%d0", to_reg);
+        println("\trl.w @__long_%d1", to_reg);
+        println("\trl.w w0");
+        println("\trl.w w1");
+        
+        // subtract divisor from remainder
+        println("\tsub.w w0, @__long_%d0", rec_reg);
+        println("\tsbx.w w1, @__long_%d1", rec_reg);
+        
+        // invert borrow to produce carry
+        println("\txor.b f, $01");
+        
+        // shift the quotient bit in
+        println("\trl.w w2");
+        println("\trl.w w3");
+        
+        // jump back if the loop isn't done
+        println("\tdjnz p4, __L_divloop_%d", c);
+        
+        // place the remainder in to_reg
+        println("\tld.w @__long_%d0, w0", to_reg);
+        println("\tld.w @__long_%d1, w1", to_reg);
+        
+        // push the quotient and restore W2 and W3
+        println("\tld.w w0, @sp+");
+        println("\tld.w w1, @sp+");
+        println("\tld.w @-sp, w3");
+        println("\tld.w @-sp, w2");
+        println("\tld.w w2, w0");
+        println("\tld.w w3, w1");
+        
+        println("\tld.w w2, @sp+");
+        println("\tld.w w3, @sp+");
+        println("\tld.p p4, @sp+");
         println("\tjr.s __L_divnonzero_%d", c);
         
         // if the upper half was zero, defer division to the lower half
@@ -1412,19 +1462,27 @@ static bool gen_expr(Node *node, bool collapse, bool override) {
         
         // compute partial quotient #1 (bits 0-15)
         // this will raise the divide-by-zero exception if the dividend is zero
-        println("__L_divnonzero_%d:", c);
         println("\tld.w w1, @__long_%d0", to_reg);
         println("\tdivu.w w1, @__long_%d0", rec_reg);
         println("\tld.w @-sp, w1");
         println("\tld.w @__long_%d0, w0", to_reg);
         
-        // after this long chunk of code, the quotient is in long_2 and the remainder in long_1
+        // after that long chunk of code, the quotient is on the stack and the remainder is in to_reg
+        println("__L_divnonzero_%d:", c);
         if (node->kind == ND_DIV) {
           println("\tld.w @__long_%d0, @sp+", to_reg);
           println("\tld.w @__long_%d1, @sp+", to_reg);
         }
         else {
           println("\tadq.p sp, 4");
+        }
+        
+        if (!(node->ty->is_unsigned)) {
+          println("\tcp.p p0, 0");
+          println("\tjr p, __L_divskipnegq_%d", c);
+          println("\tneg.w @__long_%d0", to_reg);
+          println("\tngx.w @__long_%d1", to_reg);
+          println("__L_divskipnegq_%d:", c);
         }
         
         println("\tld.w w1, @sp+");
